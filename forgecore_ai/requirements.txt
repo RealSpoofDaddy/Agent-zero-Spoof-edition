@@ -1,0 +1,17 @@
+# ForgeCore AI - Blender Plugin Requirements
+# These are optional dependencies for advanced features
+
+# Core dependencies (included in Blender)
+# bpy - Blender Python API (built-in)
+# json - JSON handling (built-in)
+# datetime - Date/time utilities (built-in)
+# os - Operating system interface (built-in)
+# sys - System-specific parameters (built-in)
+
+# Optional external dependencies (for future AI integration)
+# langchain>=0.1.0
+# openai>=1.0.0
+# requests>=2.31.0
+
+# Development dependencies
+# fake-bpy-module>=3.6.0  # For IDE autocomplete
