@@ -7,6 +7,16 @@ import re
 import json
 from typing import Dict, List, Optional
 from datetime import datetime
+import uuid
+import os
+import subprocess
+import requests
+import random
+import logging
+import threading
+import time
+import glob
+import urllib.parse
 
 class PromptRouter:
     """Routes prompts to appropriate handlers based on content"""
@@ -20,11 +30,180 @@ class PromptRouter:
             'lighting': self._handle_lighting_setup,
             'animation': self._handle_animation,
             'export': self._handle_export,
-            'utility': self._handle_utility
+            'utility': self._handle_utility,
+            'knowledge': self._handle_knowledge_query,
+            'tool': self._handle_tool,
+            'procedural': self._handle_procedural,
+            'scene_analysis': self._handle_scene_analysis
         }
+        # Load knowledge base
+        self.knowledge_base = self._load_knowledge_base()
     
+    def split_prompt(self, prompt: str) -> list:
+        """Split a complex prompt into subtasks using conjunctions and punctuation."""
+        # Simple split on 'and', ';', or '.'
+        parts = re.split(r'\band\b|;|\.', prompt)
+        return [p.strip() for p in parts if p.strip()]
+
+    def _load_knowledge_base(self):
+        """Load Blender knowledge base from a JSON file."""
+        kb_path = os.path.join(os.path.dirname(__file__), '..', '..', 'knowledge', 'blender_faq.json')
+        try:
+            with open(kb_path, 'r', encoding='utf-8') as f:
+                import json
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _handle_knowledge_query(self, prompt: str) -> str:
+        """Answer Blender/3D questions using the knowledge base."""
+        # Simple keyword search
+        q = prompt.lower().strip()
+        for entry in self.knowledge_base.get('faqs', []):
+            if q in entry['question'].lower():
+                return entry['answer']
+        # Fallback: try partial match
+        for entry in self.knowledge_base.get('faqs', []):
+            if any(word in entry['question'].lower() for word in q.split()):
+                return entry['answer']
+        return "Sorry, I don't know the answer to that question yet."
+
+    def _handle_tool(self, prompt: str) -> str:
+        """Handle custom tool requests: code execution, web search, file management."""
+        prompt_lower = prompt.lower()
+        # Safer code execution
+        if 'run python' in prompt_lower or 'execute code' in prompt_lower:
+            code = prompt.split(':', 1)[-1].strip()
+            result = {'output': None, 'error': None}
+            def run_code():
+                try:
+                    # Restrict built-ins
+                    safe_builtins = {'print': print, 'range': range, 'len': len, 'str': str, 'int': int, 'float': float, 'bool': bool, 'list': list, 'dict': dict, 'set': set, 'tuple': tuple, 'enumerate': enumerate, 'abs': abs, 'min': min, 'max': max, 'sum': sum}
+                    exec_globals = {'__builtins__': safe_builtins}
+                    exec_locals = {}
+                    exec(code, exec_globals, exec_locals)
+                    result['output'] = exec_locals.get('result', 'Code executed.')
+                except Exception as e:
+                    result['error'] = f"Error executing code: {e}"
+            thread = threading.Thread(target=run_code)
+            thread.start()
+            thread.join(timeout=3)  # 3 second timeout
+            if thread.is_alive():
+                return "Error: Code execution timed out."
+            if result['error']:
+                return result['error']
+            return str(result['output'])
+        # Batch file operations
+        elif 'delete all' in prompt_lower and 'files' in prompt_lower:
+            try:
+                parts = prompt_lower.split('delete all')[-1].split('files')[0].strip()
+                ext = parts if parts.startswith('.') else f'.{parts}' if parts else '.tmp'
+                path = prompt.split('in', 1)[-1].strip() if 'in' in prompt_lower else '.'
+                files = glob.glob(os.path.join(path, f'*{ext}'))
+                for f in files:
+                    os.remove(f)
+                return f"Deleted {len(files)} files with extension {ext} in {path}"
+            except Exception as e:
+                logging.error(f"Batch file delete error: {e}")
+                return f"Batch file delete error: {e}"
+        # Web search improvements
+        elif 'web search' in prompt_lower:
+            try:
+                # Engine selection
+                engine = 'duckduckgo'
+                if 'google' in prompt_lower:
+                    engine = 'google'
+                query = prompt.split(':', 1)[-1].strip()
+                if engine == 'duckduckgo':
+                    resp = requests.get(f'https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json')
+                    if resp.ok:
+                        data = resp.json()
+                        abstract = data.get('AbstractText', '')
+                        related = data.get('RelatedTopics', [])
+                        if abstract:
+                            return abstract
+                        elif related:
+                            # Show first related topic
+                            topic = related[0]
+                            if isinstance(topic, dict):
+                                return f"{topic.get('Text', '')} ({topic.get('FirstURL', '')})"
+                        return 'No summary found.'
+                    return 'Web search failed.'
+                elif engine == 'google':
+                    # Placeholder: Google Custom Search API would be needed for real results
+                    return f"Google search for '{query}' is not implemented (API key required)."
+            except Exception as e:
+                logging.error(f"Web search error: {e}")
+                return f"Web search error: {e}"
+        elif 'list files' in prompt_lower:
+            path = prompt.split(':', 1)[-1].strip() or '.'
+            try:
+                files = os.listdir(path)
+                return '\n'.join(files)
+            except Exception as e:
+                return f"File listing error: {e}"
+        elif 'delete file' in prompt_lower:
+            path = prompt.split(':', 1)[-1].strip()
+            try:
+                os.remove(path)
+                return f"Deleted file: {path}"
+            except Exception as e:
+                return f"File deletion error: {e}"
+        else:
+            return "Unknown tool command."
+
+    def _handle_procedural(self, prompt: str) -> str:
+        """Advanced procedural content generation."""
+        p = prompt.lower()
+        if 'city' in p:
+            return "# Generate a grid of cubes as buildings\nfor x in range(5):\n    for y in range(5):\n        bpy.ops.mesh.primitive_cube_add(size=1, location=(x*2, y*2, 0))\n"
+        elif 'terrain' in p:
+            return "# Generate random terrain\nimport random\nfor x in range(10):\n    for y in range(10):\n        z = random.uniform(0, 2)\n        bpy.ops.mesh.primitive_cube_add(size=1, location=(x, y, z))\n"
+        elif 'forest' in p:
+            return "# Generate a forest of random trees\nimport random\nfor i in range(20):\n    x, y = random.uniform(-10, 10), random.uniform(-10, 10)\n    bpy.ops.mesh.primitive_cylinder_add(radius=0.2, depth=2, location=(x, y, 1))\n    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.8, location=(x, y, 2))\n"
+        elif 'spiral staircase' in p:
+            return "# Generate a spiral staircase\nimport math\nsteps = 20\nradius = 2\nfor i in range(steps):\n    angle = i * (math.pi / 8)\n    x = math.cos(angle) * radius\n    y = math.sin(angle) * radius\n    z = i * 0.3\n    bpy.ops.mesh.primitive_cube_add(size=0.5, location=(x, y, z))\n"
+        elif 'scatter rocks' in p:
+            return "# Scatter rocks on terrain\nimport random\nfor i in range(30):\n    x, y = random.uniform(-10, 10), random.uniform(-10, 10)\n    z = random.uniform(0, 1)\n    bpy.ops.mesh.primitive_ico_sphere_add(radius=random.uniform(0.2, 0.6), location=(x, y, z))\n"
+        else:
+            return "Procedural generation not implemented for this prompt."
+
+    def _handle_scene_analysis(self, prompt: str) -> str:
+        """Advanced scene analysis: list materials, unused meshes, animation data."""
+        try:
+            import bpy
+            objects = [obj for obj in bpy.context.scene.objects]
+            meshes = [obj for obj in objects if obj.type == 'MESH']
+            lights = [obj for obj in objects if obj.type == 'LIGHT']
+            cameras = [obj for obj in objects if obj.type == 'CAMERA']
+            # Materials
+            materials = set()
+            for obj in meshes:
+                for mat in getattr(obj.data, 'materials', []):
+                    if mat:
+                        materials.add(mat.name)
+            # Unused meshes
+            all_meshes = set(bpy.data.meshes.keys())
+            used_meshes = set(obj.data.name for obj in meshes if hasattr(obj, 'data'))
+            unused_meshes = all_meshes - used_meshes
+            # Animation data
+            animated = [obj.name for obj in objects if obj.animation_data and obj.animation_data.action]
+            summary = f"Objects: {len(objects)}, Meshes: {len(meshes)}, Lights: {len(lights)}, Cameras: {len(cameras)}\n"
+            summary += f"Materials used: {', '.join(materials) if materials else 'None'}\n"
+            summary += f"Unused meshes: {', '.join(unused_meshes) if unused_meshes else 'None'}\n"
+            summary += f"Animated objects: {', '.join(animated) if animated else 'None'}"
+            return summary
+        except Exception as e:
+            logging.error(f"Scene analysis error: {e}")
+            return f"Scene analysis error: {e}"
+
     def route_prompt(self, prompt: str) -> str:
-        """Route a prompt to the appropriate handler and return Blender code"""
+        """Route a prompt to the appropriate handler and return Blender code. Supports multi-step prompts."""
+        subtasks = self.split_prompt(prompt)
+        if len(subtasks) > 1:
+            # Multi-step: return a marker for sub-agent orchestration
+            return json.dumps({'multi_step': True, 'subtasks': subtasks})
+        
         prompt_lower = prompt.lower()
         
         # Determine the type of operation based on keywords
@@ -42,6 +221,14 @@ class PromptRouter:
             return self._handle_animation(prompt)
         elif any(word in prompt_lower for word in ['export', 'save', 'fbx', 'obj']):
             return self._handle_export(prompt)
+        elif any(word in prompt_lower for word in ['how do i', 'what is', 'how to', 'faq', 'question', 'explain']):
+            return self._handle_knowledge_query(prompt)
+        elif any(word in prompt_lower for word in ['tool', 'run python', 'execute code', 'web search', 'list files', 'delete file']):
+            return self._handle_tool(prompt)
+        if any(word in prompt_lower for word in ['generate city', 'generate terrain', 'procedural']):
+            return self._handle_procedural(prompt)
+        if any(word in prompt_lower for word in ['analyze scene', 'scene analysis', 'summarize scene']):
+            return self._handle_scene_analysis(prompt)
         else:
             return self._handle_utility(prompt)
     
@@ -273,23 +460,62 @@ class AgentCore:
     
     def __init__(self):
         self.router = PromptRouter()
-        self.memory = {}
+        self.memory = self._load_memory()
+        self.sub_agents = {}  # Track sub-agents by UUID
+        self.sub_agent_results = []
+        self.history = self.memory.get('history', [])
     
-    def handle_prompt(self, prompt: str) -> str:
-        """Main entry point for handling prompts"""
+    def _load_memory(self):
+        """Load persistent memory/history from file."""
+        mem_path = os.path.join(os.path.dirname(__file__), 'memory', 'memory_store.json')
+        if os.path.exists(mem_path):
+            try:
+                with open(mem_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
+    def _save_memory(self):
+        """Save persistent memory/history to file."""
+        mem_path = os.path.join(os.path.dirname(__file__), 'memory', 'memory_store.json')
         try:
-            # Log the prompt
+            with open(mem_path, 'w', encoding='utf-8') as f:
+                json.dump(self.memory, f, indent=2)
+        except Exception:
+            pass
+
+    def handle_prompt(self, prompt: str) -> str:
+        """Main entry point for handling prompts. Supports multi-agent orchestration."""
+        try:
             self._log_prompt(prompt)
+            router_result = self.router.route_prompt(prompt)
+            # Check for multi-step marker
+            if isinstance(router_result, str):
+                try:
+                    router_result_json = json.loads(router_result)
+                except Exception:
+                    router_result_json = None
+            else:
+                router_result_json = None
+            if router_result_json and router_result_json.get('multi_step'):
+                # Multi-agent orchestration
+                subtasks = router_result_json['subtasks']
+                self.sub_agent_results = []
+                for subtask in subtasks:
+                    sub_agent_id = str(uuid.uuid4())
+                    sub_agent = AgentCore()
+                    self.sub_agents[sub_agent_id] = sub_agent
+                    result = sub_agent.handle_prompt(subtask)
+                    self.sub_agent_results.append({'id': sub_agent_id, 'prompt': subtask, 'result': result})
+                # Aggregate all results into a single script
+                all_code = '\n\n'.join([r['result'] for r in self.sub_agent_results])
+                self._log_result(prompt, all_code)
+                return all_code
             
-            # Route the prompt to appropriate handler
-            blender_code = self.router.route_prompt(prompt)
-            
-            # Add safety wrapper
+            blender_code = router_result if isinstance(router_result, str) else str(router_result)
             safe_code = self._wrap_code_safely(blender_code)
-            
-            # Log the result
             self._log_result(prompt, safe_code)
-            
             return safe_code
             
         except Exception as e:
@@ -329,6 +555,13 @@ class AgentCore:
             'prompt': prompt,
             'result': result
         })
+
+    def get_sub_agent_activity(self):
+        """Return a summary of sub-agent activity/results."""
+        return self.sub_agent_results
+
+    def get_history(self):
+        return self.history
 
 # Global instance
 _agent_core = None

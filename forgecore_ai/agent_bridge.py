@@ -12,11 +12,13 @@ if agent_core_dir not in sys.path:
 
 class AgentBridge:
     """Bridge between Blender and Agent Zero core logic"""
+    instance = None
     
     def __init__(self):
         self.agent_core = None
         self.memory_store = {}
         self.initialized = False
+        AgentBridge.instance = self
         
     def initialize(self):
         """Initialize the agent core and memory system"""
